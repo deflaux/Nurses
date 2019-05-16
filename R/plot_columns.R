@@ -9,7 +9,7 @@ ORDERED_PERIODS <- ORDERED_2_DIGIT_YEARS
 
 # When a numeric-valued column has this many or fewer unique values, we'll
 # assume its categorical data.
-MAX_NUM_CATEGORIES <- 12
+MAX_NUM_CATEGORIES <- 20
 
 #' Given a set of columns of data in a time series plot the data over time.
 #'
@@ -50,34 +50,106 @@ MAX_NUM_CATEGORIES <- 12
 plot_columns <- function(data_,
                          col_names,
                          col_prefix = stringr::str_sub(col_names[1], end = -3)) {
+
   periods_from_col_names <- stringr::str_replace(col_names, col_prefix, '')
+  period_col_name <- 'period'
+
+  # See https://tidyeval.tidyverse.org/
+  period_col_name_sym <- dplyr::sym(period_col_name)
+  col_prefix_sym <- dplyr::sym(col_prefix)
+
   # Pivot the data from wide to long.
   long_data = data_ %>%
     dplyr::select(col_names) %>%
-    tidyr::gather_(gather_cols = col_names, key_col = 'period', value_col = col_prefix) %>%
+    tidyr::gather(key = !!period_col_name_sym, value = !!col_prefix_sym, col_names) %>%
     dplyr::mutate(
       # Use the ordering from ORDERED_PERIODS to put a nice order on this factor.
-      period = forcats::fct_relevel(stringr::str_replace(.data$period, col_prefix, ""),
+      period = forcats::fct_relevel(stringr::str_replace(.data[[period_col_name]], col_prefix, ""),
                                     intersect(ORDERED_PERIODS, periods_from_col_names))
     )
 
-  if (is.character(long_data[[col_prefix]])
-      || MAX_NUM_CATEGORIES >= length(unique(long_data[[col_prefix]]))) {
+  plot_column(long_data, stem_col_name = col_prefix, period_col_name = period_col_name)
+}
+
+plot_column <- function(data_, stem_col_name, period_col_name = 'period', sort_by_frequency = FALSE) {
+  ## TODO assert expected columns and types
+
+  # See https://tidyeval.tidyverse.org/
+  stem_col_name_sym <- dplyr::sym(stem_col_name)
+  period_col_name_sym <- dplyr::sym(period_col_name)
+
+  num_categories <- length(unique(data_[[stem_col_name]]))
+
+  if (is.character(data_[[stem_col_name]])
+      || MAX_NUM_CATEGORIES >= num_categories) {
+    # Set a good size for the notebook display of this.
+    options(repr.plot.width = 14, repr.plot.height = min(max(6, .5 * num_categories), 20))
+
     # Create a count of instances per categorical value and time period and then display a heatmap.
-    long_data %>%
-      dplyr::group_by_('period', col_prefix) %>%
-      dplyr::summarize(count = dplyr::n()) %>%
-      ggplot2::ggplot(ggplot2::aes_string(x='period', y=col_prefix, fill='count', label='count')) +
-      ggplot2::geom_tile() +
-      ggplot2::geom_text(color = "white") +
-      viridis::scale_fill_viridis() +
-      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 50, hjust = 1, vjust = 1)) +
-      ggplot2::ggtitle(stringr::str_c(col_prefix, ' by time period'))
+    counts <- data_ %>%
+      dplyr::group_by(!!period_col_name_sym, !!stem_col_name_sym) %>%
+      dplyr::summarize(cnt = dplyr::n())
+
+    if(sort_by_frequency) {
+      counts <- counts %>%
+        dplyr::arrange(!!period_col_name_sym, dplyr::desc(cnt), !!stem_col_name_sym)
+    }
+
+    p <- plot_categorical_counts(counts, stem_col_name)
   } else {
-    # Display a box plot of the continuous variable.
-    long_data %>%
-      ggplot2::ggplot(ggplot2::aes_string(x = 'period', y = col_prefix)) +
-      ggplot2::geom_boxplot() +
-      ggplot2::ggtitle(stringr::str_c(col_prefix, ' by time period'))
+    # Set a good size for the notebook display of this.
+    options(repr.plot.width = 14, repr.plot.height = 10)
+    p <- plot_numerical_data(data_, stem_col_name)
   }
+
+  return(p)
+}
+
+plot_categorical_counts <- function(data_, stem_col_name, period_col_name = 'period') {
+  ## TODO assert expected columns and types
+
+  # See https://tidyeval.tidyverse.org/
+  stem_col_name_sym <- dplyr::sym(stem_col_name)
+  period_col_name_sym <- dplyr::sym(period_col_name)
+
+  # Display a heatmap for the counts of the categorical variable.
+  p <- data_ %>%
+    ggplot2::ggplot(ggplot2::aes(x = !!period_col_name_sym,
+                                 y = forcats::as_factor(!!stem_col_name_sym),
+                                 fill = cnt, label = cnt)) +
+    ggplot2::geom_tile() +
+    ggplot2::geom_text(color = 'white', fontface = 2, angle = 30, size = 4) +
+    viridis::scale_fill_viridis() +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 50, hjust = 1, vjust = 1),
+                   legend.position = 'none') +
+    ggplot2::ggtitle(stringr::str_c(stem_col_name_sym, ' by time period'))
+
+  return(p)
+}
+
+plot_numerical_data <- function(data_, stem_col_name, period_col_name = 'period') {
+  ## TODO assert expected columns and types
+
+  # See https://tidyeval.tidyverse.org/
+  stem_col_name_sym <- dplyr::sym(stem_col_name)
+  period_col_name_sym <- dplyr::sym(period_col_name)
+
+  # Display a box plot of the continuous variable.
+  p <- data_ %>%
+    ggplot2::ggplot(ggplot2::aes(x = !!period_col_name_sym, y = !!stem_col_name_sym)) +
+    ggplot2::geom_boxplot() +
+    ggplot2::stat_summary(fun.data = get_boxplot_fun_data, geom = 'text', size = 4, vjust = -0.4) +
+    ggplot2::coord_flip() +
+    ggplot2::ggtitle(stringr::str_c(stem_col_name_sym, ' by time period'))
+
+  return(p)
+}
+
+#' Returns a data frame with a y position and a label, for use annotating ggplot boxplots.
+#'
+#' @param d A data frame.
+#' @return A data frame with column y as max and column label as length.
+#'
+get_boxplot_fun_data <- function(d) {
+  return(data.frame(y = max(d), label = stringr::str_c("N = ", length(d))))
 }
